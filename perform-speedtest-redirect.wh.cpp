@@ -99,6 +99,7 @@ The original launch is left untouched when none of the configured substrings mat
 
 #include <windows.h>
 #include <shellapi.h>
+#include <cwctype>
 #include <string>
 #include <vector>
 
@@ -155,8 +156,17 @@ static PCWSTR SafeStr(PCWSTR s) {
     return s ? s : L"(null)";
 }
 
+static PCWSTR SkipLeadingWhitespace(PCWSTR s) {
+    while (s && iswspace(*s)) {
+        ++s;
+    }
+
+    return s;
+}
+
 static bool IsUrl(PCWSTR s) {
-    return s && (wcsncmp(s, L"http://", 7) == 0 || wcsncmp(s, L"https://", 8) == 0);
+    s = SkipLeadingWhitespace(s);
+    return s && (_wcsnicmp(s, L"http://", 7) == 0 || _wcsnicmp(s, L"https://", 8) == 0);
 }
 
 
@@ -208,7 +218,7 @@ BOOL WINAPI CreateProcessW_Hook(
 
             if (IsUrl(newCmd.c_str())) {
                 LOG(L"Command mode: opening configured URL");
-                newCmd = L"explorer.exe \"" + newCmd + L"\"";
+                newCmd = L"explorer.exe \"" + std::wstring(SkipLeadingWhitespace(newCmd.c_str())) + L"\"";
             } else {
                 LOG(L"Command mode: executing configured command");
             }

@@ -29,6 +29,8 @@ https://go.microsoft.com/fwlink/?linkid=2325015
 
 In the Windhawk mod settings panel you can configure how matched speed-test launches are handled.
 
+Upgrading from v1.2.x: the old **Redirect URL** setting was renamed to **Action text**. Re-enter your custom URL in **Action text** after upgrading.
+
 ### Command execution mode
 
 - **Disabled**: URL replacement mode. This replaces Microsoft's URL inside the original browser launch command.
