@@ -27,8 +27,8 @@ When you right-click the network icon in the Windows taskbar and click
 https://go.microsoft.com/fwlink/?linkid=2324916
 ```
 
-This mod can either: 
-1. Replace that URL, or 
+This mod can either:
+1. Replace that URL, or
 2. Let you execute a command of your choice instead.
 
 By default, it redirects the URL to **https://www.speedtest.net**.
@@ -48,19 +48,21 @@ Controls what the mod does after detecting the speed-test launch.
   test link. Change this to any speed test site you prefer, e.g.
   `https://fast.com` or `https://cloudflare.com/speed`.
 
-- **Command execution mode** - the full command line to run. Example:
-    
+- **Command execution mode** - the full command line or URL to run. Examples:
+
+    ```https://www.speedtest.net/```
+
     ```explorer.exe shell:AppsFolder\Ookla.SpeedtestbyOokla_43tkc6nmykmb6!App```
 
 ### Target substrings
 
-A list of substrings to detect inside the launched command line. Default entries: 
+A list of substrings to detect inside the launched command line. Default entries:
 
 `linkid=2324916`
 
 `linkid=2325015`
 
-Feel free to add more entries here if Microsoft ever changes them. 
+Feel free to add more entries here if Microsoft ever changes them.
 
 ## How it works
 
@@ -117,11 +119,12 @@ static bool HasLinkId(LPCWSTR s) {
     return false;
 }
 
-// Replace the full URL that contains LINK_ID with redirectUrl.
-// Returns the modified string, or empty if LINK_ID not found.
+// Replace the full URL that contains a configured target substring with actionText.
+// Returns the modified string, or empty if no target substring is found.
 static std::wstring ReplaceUrl(LPCWSTR src) {
-    Wh_Log(L"ReplaceUrl: %ls", src);
     if (!src) return {};
+
+    if (g_actionText.empty()) return {};
 
     std::wstring s(src);
 
@@ -138,15 +141,17 @@ static std::wstring ReplaceUrl(LPCWSTR src) {
     size_t urlEnd   = s.find_first_of(L" \t\r\n\"'", pos);
     if (urlEnd   == std::wstring::npos) urlEnd   = s.size();
 
-    PCWSTR url = Wh_GetStringSetting(L"redirectUrl");
-    s.replace(urlStart, urlEnd - urlStart, url);
-    Wh_FreeStringSetting(url);
+    s.replace(urlStart, urlEnd - urlStart, g_actionText);
     return s;
 }
 
 
 static PCWSTR SafeStr(PCWSTR s) {
     return s ? s : L"(null)";
+}
+
+static bool IsUrl(PCWSTR s) {
+    return s && (wcsncmp(s, L"http://", 7) == 0 || wcsncmp(s, L"https://", 8) == 0);
 }
 
 
@@ -169,18 +174,16 @@ BOOL WINAPI CreateProcessW_Hook(
     LPSTARTUPINFOW si,
     LPPROCESS_INFORMATION pi
 ) {
-    LOG(L"CreateProcessW(app=\"%ls\", cmd=\"%ls\", flags=0x%08lX, dir=\"%ls\")",
-        SafeStr(app),
-        SafeStr(cmd),
-        flags,
-        SafeStr(dir));
-
     if (!HasLinkId(cmd)) {
         return CreateProcessW_Original(
             app, cmd, psa, tsa, inherit, flags, env, dir, si, pi
         );
     }
 
+    LOG(L"Intercepted speed-test CreateProcessW(app=\"%ls\", flags=0x%08lX, dir=\"%ls\")",
+        SafeStr(app),
+        flags,
+        SafeStr(dir));
 
     BOOL ret = FALSE;
 
@@ -192,11 +195,16 @@ BOOL WINAPI CreateProcessW_Hook(
         } else {
             std::wstring newCmd = g_actionText;
 
-            LOG(L"Command mode: executing \"%ls\"", newCmd.c_str());
+            if (IsUrl(newCmd.c_str())) {
+                LOG(L"Command mode: opening configured URL");
+                newCmd = L"explorer.exe \"" + newCmd + L"\"";
+            } else {
+                LOG(L"Command mode: executing configured command");
+            }
 
             ret = CreateProcessW_Original(
                 nullptr,
-                newCmd.data(),
+                &newCmd[0],
                 psa,
                 tsa,
                 inherit,
@@ -221,11 +229,11 @@ BOOL WINAPI CreateProcessW_Hook(
                 app, cmd, psa, tsa, inherit, flags, env, dir, si, pi
             );
         } else {
-            LOG(L"URL mode: replacing command with \"%ls\"", newCmd.c_str());
+            LOG(L"URL mode: replacing matched speed-test URL");
 
             ret = CreateProcessW_Original(
                 app,
-                newCmd.data(),
+                &newCmd[0],
                 psa,
                 tsa,
                 inherit,
@@ -290,9 +298,9 @@ static void LoadSettings() {
         g_targetSubstrings.emplace_back(L"linkid=2325015");
     }
 
-    LOG(L"Settings loaded: commandMode=%d, actionText=\"%ls\", substringCount=%zu",
+    LOG(L"Settings loaded: commandMode=%d, actionTextLength=%zu, substringCount=%zu",
         g_commandMode,
-        g_actionText.c_str(),
+        g_actionText.size(),
         g_targetSubstrings.size());
 }
 
