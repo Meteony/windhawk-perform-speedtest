@@ -107,13 +107,14 @@ The original launch is left untouched when none of the configured substrings mat
 static bool g_commandMode = false;
 static std::wstring g_actionText;
 static std::vector<std::wstring> g_targetSubstrings;
+static SRWLOCK g_settingsLock = SRWLOCK_INIT;
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
-static bool HasLinkId(LPCWSTR s) {
+static bool HasLinkId(LPCWSTR s, const std::vector<std::wstring>& targetSubstrings) {
     if (!s) return false;
 
-    for (const auto & sstr : g_targetSubstrings){
+    for (const auto & sstr : targetSubstrings){
         if (wcsstr(s, sstr.c_str())) return true;
     }
     return false;
@@ -121,15 +122,19 @@ static bool HasLinkId(LPCWSTR s) {
 
 // Replace the full URL that contains a configured target substring with actionText.
 // Returns the modified string, or empty if no target substring is found.
-static std::wstring ReplaceUrl(LPCWSTR src) {
+static std::wstring ReplaceUrl(
+    LPCWSTR src,
+    const std::wstring& actionText,
+    const std::vector<std::wstring>& targetSubstrings
+) {
     if (!src) return {};
 
-    if (g_actionText.empty()) return {};
+    if (actionText.empty()) return {};
 
     std::wstring s(src);
 
     const wchar_t* hit = nullptr;
-    for (const auto & link : g_targetSubstrings){
+    for (const auto & link : targetSubstrings){
         hit = wcsstr(src, link.c_str());
         if (hit) break;
     }
@@ -141,7 +146,7 @@ static std::wstring ReplaceUrl(LPCWSTR src) {
     size_t urlEnd   = s.find_first_of(L" \t\r\n\"'", pos);
     if (urlEnd   == std::wstring::npos) urlEnd   = s.size();
 
-    s.replace(urlStart, urlEnd - urlStart, g_actionText);
+    s.replace(urlStart, urlEnd - urlStart, actionText);
     return s;
 }
 
@@ -174,7 +179,13 @@ BOOL WINAPI CreateProcessW_Hook(
     LPSTARTUPINFOW si,
     LPPROCESS_INFORMATION pi
 ) {
-    if (!HasLinkId(cmd)) {
+    AcquireSRWLockShared(&g_settingsLock);
+    bool commandMode = g_commandMode;
+    std::wstring actionText = g_actionText;
+    std::vector<std::wstring> targetSubstrings = g_targetSubstrings;
+    ReleaseSRWLockShared(&g_settingsLock);
+
+    if (!HasLinkId(cmd, targetSubstrings)) {
         return CreateProcessW_Original(
             app, cmd, psa, tsa, inherit, flags, env, dir, si, pi
         );
@@ -187,13 +198,13 @@ BOOL WINAPI CreateProcessW_Hook(
 
     BOOL ret = FALSE;
 
-    if (g_commandMode) {
-        if (g_actionText.empty()) {
+    if (commandMode) {
+        if (actionText.empty()) {
             LOG(L"Command mode enabled, but actionText is empty");
             SetLastError(ERROR_INVALID_PARAMETER);
             ret = FALSE;
         } else {
-            std::wstring newCmd = g_actionText;
+            std::wstring newCmd = actionText;
 
             if (IsUrl(newCmd.c_str())) {
                 LOG(L"Command mode: opening configured URL");
@@ -220,7 +231,7 @@ BOOL WINAPI CreateProcessW_Hook(
                 ret ? 0 : GetLastError());
         }
     } else {
-        std::wstring newCmd = ReplaceUrl(cmd);
+        std::wstring newCmd = ReplaceUrl(cmd, actionText, targetSubstrings);
 
         if (newCmd.empty()) {
             LOG(L"URL mode: ReplaceUrl returned empty, falling back to original command");
@@ -271,13 +282,13 @@ static bool HookFn(void* target, void* hook, void** orig, const wchar_t* name){
 }
 
 static void LoadSettings() {
-    g_commandMode = Wh_GetIntSetting(L"commandMode") != 0;
+    bool commandMode = Wh_GetIntSetting(L"commandMode") != 0;
 
     PCWSTR actionText = Wh_GetStringSetting(L"actionText");
-    g_actionText = actionText ? actionText : L"";
+    std::wstring actionTextValue = actionText ? actionText : L"";
     Wh_FreeStringSetting(actionText);
 
-    g_targetSubstrings.clear();
+    std::vector<std::wstring> targetSubstrings;
 
     for (int i = 0;; i++) {
         PCWSTR substring = Wh_GetStringSetting(L"targetSubstrings[%d]", i);
@@ -287,21 +298,27 @@ static void LoadSettings() {
             break;
         }
 
-        g_targetSubstrings.emplace_back(substring);
-        LOG(L"Loaded targetSubstrings[%d]=\"%ls\"", i, substring);
+        targetSubstrings.emplace_back(substring);
+        LOG(L"Loaded targetSubstrings[%d]", i);
 
         Wh_FreeStringSetting(substring);
     }
 
-    if (g_targetSubstrings.empty()) {
-        g_targetSubstrings.emplace_back(L"linkid=2324916");
-        g_targetSubstrings.emplace_back(L"linkid=2325015");
+    if (targetSubstrings.empty()) {
+        targetSubstrings.emplace_back(L"linkid=2324916");
+        targetSubstrings.emplace_back(L"linkid=2325015");
     }
 
+    AcquireSRWLockExclusive(&g_settingsLock);
+    g_commandMode = commandMode;
+    g_actionText = actionTextValue;
+    g_targetSubstrings = targetSubstrings;
+    ReleaseSRWLockExclusive(&g_settingsLock);
+
     LOG(L"Settings loaded: commandMode=%d, actionTextLength=%zu, substringCount=%zu",
-        g_commandMode,
-        g_actionText.size(),
-        g_targetSubstrings.size());
+        commandMode,
+        actionTextValue.size(),
+        targetSubstrings.size());
 }
 
 BOOL Wh_ModInit() {
